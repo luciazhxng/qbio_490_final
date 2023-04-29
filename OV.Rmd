@@ -1,0 +1,486 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+knitr::opts_knit$set(root.dir = normalizePath("/Users/aliceeeee/Desktop/Spring23/QBIO490/qbio_490_alice/analysis_data")) 
+```
+
+```{r}
+if (!require("BiocManager", quietly = TRUE)) 
+  install.packages("BiocManager")
+  BiocManager::install(version = "3.16")
+if (!require("TCGAbiolinks", quietly = TRUE)) 
+  BiocManager::install("TCGAbiolinks")
+if (!require("maftools", quietly = TRUE)) 
+  BiocManager::install("maftools")
+```
+```{r}
+
+   library(BiocManager)
+   library(maftools)
+    install.packages("rlang")
+   library(TCGAbiolinks)
+```
+
+
+```{r}
+clin_query <-clin_query <- GDCquery(project = "TCGA-OV", 
+                                    data.category = "Clinical", 
+                                    file.type = "xml")
+GDCdownload(clin_query)
+clinic <- GDCprepare_clinic(clin_query, 
+                            clinical.info = "patient")
+```
+```{r}
+colnames(clinic)[ colnames(clinic) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+maf_query <- GDCquery(
+project = "TCGA-OV",
+data.category = "Simple Nucleotide Variation",
+access = "open",
+data.type = "Masked Somatic Mutation",
+workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+GDCdownload(maf_query)
+maf <- GDCprepare(maf_query)
+maf_object <- read.maf(maf = maf, clinicalData = clinic,
+isTCGA = TRUE)
+```
+```{r}
+rna_query <- GDCquery(project ="TCGA-OV",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts") 
+GDCdownload(rna_query)
+rna_se <- GDCprepare(rna_query)
+```
+
+
+```{r}
+lymph_na_mask<-ifelse(clinic$lymphatic_invasion!="",TRUE,FALSE)
+lymph_cleaned_clinic=clinic[lymph_na_mask,]
+```
+
+```{r}
+if (! require(survival)){
+  install.packages("survival")
+}
+library(survival)
+if (!require(survminer)){
+  install.packages("survminer")
+}
+library(survminer)
+if (!require(ggplot2)){
+  install.packages("ggplot2")
+}
+library(ggplot2)
+```
+
+```{r}
+lymph_cleaned_clinic$survival_time<-ifelse(is.na(lymph_cleaned_clinic$days_to_death),
+                                           lymph_cleaned_clinic$survival_time<-lymph_cleaned_clinic$days_to_last_followup,
+                                           lymph_cleaned_clinic$survival_time<-lymph_cleaned_clinic$days_to_death)
+
+inf_mask <- ifelse(lymph_cleaned_clinic$survival_time =="-Inf", F, T)
+lymph_cleaned_clinic<- lymph_cleaned_clinic[inf_mask,]
+
+lymph_cleaned_clinic$death_event<-ifelse(lymph_cleaned_clinic$vital_status=="Alive",lymph_cleaned_clinic$death_event<-F,lymph_cleaned_clinic$death_event<-T)
+survival_na_mask<-ifelse(is.na(lymph_cleaned_clinic$survival_time),F,T)
+lymph_cleaned_clinic<-lymph_cleaned_clinic[survival_na_mask,]
+
+```
+
+```{r}
+survival_object <- Surv(time = lymph_cleaned_clinic$survival_time,event = lymph_cleaned_clinic$death_event)
+fit_object <- survfit( survival_object~ lymph_cleaned_clinic$lymphatic_invasion, data =
+                        lymph_cleaned_clinic)
+survplot <- ggsurvplot(fit_object , pval=TRUE, ggtheme = 
+                         theme(plot.margin = unit(c(1,1,1,1), "cm")), legend = 
+                         "right")
+KM_plot_lymph <- survplot$plot + theme_bw() + theme(axis.title = 
+                                                  element_text(size=20), axis.text = element_text(size=16),
+                                                legend.title = element_text(size=14), legend.text = 
+                                                  element_text(size=12))
+KM_plot_lymph<-survplot$plot + theme_bw() + theme(axis.title= element_text (size=20),
+                                                axis.text = element_text (size=16),
+                                                legend.title = element_text(size=14),
+                                                legend.text = element_text(size=12))
+
+KM_plot_lymph
+```
+```{r}
+oncoplot(maf = maf_object,
+         top = 20,
+         borderCol = NA) 
+```
+```{r}
+oncoplot(maf = maf_object,
+         top = 20,
+         clinicalFeatures = "lymphatic_invasion",
+         borderCol = NA)
+```
+```{r}
+invasion_yes_mask<-ifelse(maf_object@clinical.data$lymphatic_invasion=='YES',T,F)
+invasion_yes_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[invasion_yes_mask]
+invasion_yes_maf <- subsetMaf(maf = maf_object,
+                       tsb = invasion_yes_patient_barcodes)
+```
+```{r}
+invasion_no_mask<-ifelse(maf_object@clinical.data$lymphatic_invasion=='NO',T,F)
+invasion_no_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[invasion_no_mask]
+invasion_no_maf <- subsetMaf(maf = maf_object,
+                       tsb = invasion_no_patient_barcodes)
+```
+```{r}
+coOncoplot(m1 = invasion_yes_maf, 
+           m2 = invasion_no_maf, 
+           m1Name = 'Lymphatic invasion', 
+           m2Name = 'No lymphatic invasion', 
+           borderCol = NA)
+```
+```{r}
+clinical_drug <- GDCprepare_clinic(query = clin_query,
+                                   clinical.info = "drug")
+```
+```{r}
+colnames(clinic)[ colnames(clinic) == "Tumor_Sample_Barcode" ] <- "bcr_patient_barcode"
+clinical_full <- merge(clinic,clinical_drug,by="bcr_patient_barcode")
+```
+
+```{r}
+colnames(clinical_full)[ colnames(clinical_full) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+maf_object <- read.maf(maf = maf, 
+                       clinicalData = clinical_full,
+                       isTCGA = TRUE)
+```
+```{r}
+oncoplot(maf = maf_object,
+         top = 20,
+         clinicalFeatures = "drug_name",
+         borderCol = NA)
+```
+```{r}
+plotmafSummary(
+  maf_object,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Avastin_mask<-ifelse(maf_object@clinical.data$drug_name=='Avastin',T,F)
+Avastin_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Avastin_mask]
+Avastin_maf <- subsetMaf(maf = maf_object,
+                       tsb = Avastin_patient_barcodes)
+```
+```{r}
+plotmafSummary(
+  Avastin_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Bevacizumab_mask<-ifelse(maf_object@clinical.data$drug_name=='Bevacizumab',T,F)
+Bevacizumab_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Bevacizumab_mask]
+Bevacizumab_maf <- subsetMaf(maf = maf_object,
+                       tsb = Bevacizumab_patient_barcodes)
+plotmafSummary(
+  Bevacizumab_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Carboplatin_mask<-ifelse(maf_object@clinical.data$drug_name=='Carboplatin',T,F)
+Carboplatin_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Carboplatin_mask]
+Carboplatin_maf <- subsetMaf(maf = maf_object,
+                       tsb = Carboplatin_patient_barcodes)
+plotmafSummary(
+  Carboplatin_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Cisplatin_mask<-ifelse(maf_object@clinical.data$drug_name=='Cisplatin',T,F)
+Cisplatin_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Cisplatin_mask]
+Cisplatin_maf <- subsetMaf(maf = maf_object,
+                       tsb = Cisplatin_patient_barcodes)
+plotmafSummary(
+  Cisplatin_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Cytoxan_mask<-ifelse(maf_object@clinical.data$drug_name=='Cytoxan',T,F)
+Cytoxan_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Cytoxan_mask]
+Cytoxan_maf <- subsetMaf(maf = maf_object,
+                       tsb = Cytoxan_patient_barcodes)
+plotmafSummary(
+  Cytoxan_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Docetaxel_mask<-ifelse(maf_object@clinical.data$drug_name=='Docetaxel',T,F)
+Docetaxel_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Docetaxel_mask]
+Docetaxel_maf <- subsetMaf(maf = maf_object,
+                       tsb = Docetaxel_patient_barcodes)
+plotmafSummary(
+  Docetaxel_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Doxil_mask<-ifelse(maf_object@clinical.data$drug_name=='Doxil',T,F)
+Doxil_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Doxil_mask]
+Doxil_maf <- subsetMaf(maf = maf_object,
+                       tsb = Doxil_patient_barcodes)
+plotmafSummary(
+  Doxil_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Gemcitabine_mask<-ifelse(maf_object@clinical.data$drug_name=='Gemcitabine',T,F)
+Gemcitabine_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Gemcitabine_mask]
+Gemcitabine_maf <- subsetMaf(maf = maf_object,
+                       tsb = Gemcitabine_patient_barcodes)
+plotmafSummary(
+  Gemcitabine_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Gemzar_mask<-ifelse(maf_object@clinical.data$drug_name=='Gemzar',T,F)
+Gemzar_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Gemzar_mask]
+Gemzar_maf <- subsetMaf(maf = maf_object,
+                       tsb = Gemzar_patient_barcodes)
+plotmafSummary(
+  Gemzar_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Paclitaxel_mask<-ifelse(maf_object@clinical.data$drug_name=='Paclitaxel',T,F)
+Paclitaxel_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Paclitaxel_mask]
+Paclitaxel_maf <- subsetMaf(maf = maf_object,
+                       tsb = Paclitaxel_patient_barcodes)
+plotmafSummary(
+  Paclitaxel_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Tamoxifen_mask<-ifelse(maf_object@clinical.data$drug_name=='Tamoxifen',T,F)
+Tamoxifen_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Tamoxifen_mask]
+Tamoxifen_maf <- subsetMaf(maf = maf_object,
+                       tsb = Tamoxifen_patient_barcodes)
+plotmafSummary(
+  Tamoxifen_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)	
+```
+```{r}
+Taxol_mask<-ifelse(maf_object@clinical.data$drug_name=='Taxol',T,F)
+Taxol_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Taxol_mask]
+Taxol_maf <- subsetMaf(maf = maf_object,
+                       tsb = Taxol_patient_barcodes)
+plotmafSummary(
+  Taxol_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Taxotere_mask<-ifelse(maf_object@clinical.data$drug_name=='Taxotere',T,F)
+Taxotere_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Taxotere_mask]
+Taxotere_maf <- subsetMaf(maf = maf_object,
+                       tsb = Taxotere_patient_barcodes)
+plotmafSummary(
+  Taxotere_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+```{r}
+Topotecan_mask<-ifelse(maf_object@clinical.data$drug_name=='Topotecan',T,F)
+Topotecan_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[Topotecan_mask]
+Topotecan_maf <- subsetMaf(maf = maf_object,
+                       tsb = Topotecan_patient_barcodes)
+plotmafSummary(
+  Topotecan_maf,
+  rmOutlier = TRUE,
+  dashboard = TRUE,
+  titvRaw = TRUE,
+  log_scale = FALSE,
+  addStat = NULL,
+  showBarcodes = FALSE,
+  fs = 1,
+  textSize = 0.8,
+  color = NULL,
+  titleSize = c(1, 0.8),
+  titvColor = NULL,
+  top = 10
+)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
